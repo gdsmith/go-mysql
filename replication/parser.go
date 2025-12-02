@@ -33,12 +33,14 @@ type BinlogParser struct {
 	timestampStringLocation *time.Location
 
 	// used to start/stop processing
-	stopProcessing uint32
+	stopProcessing atomic.Bool
 
 	useDecimal               bool
 	useFloatWithTrailingZero bool
 	ignoreJSONDecodeErr      bool
 	verifyChecksum           bool
+
+	payloadDecoderConcurrency int
 
 	rowsEventDecodeFunc func(*RowsEvent, []byte) error
 
@@ -54,11 +56,11 @@ func NewBinlogParser() *BinlogParser {
 }
 
 func (p *BinlogParser) Stop() {
-	atomic.StoreUint32(&p.stopProcessing, 1)
+	p.stopProcessing.Store(true)
 }
 
 func (p *BinlogParser) Resume() {
-	atomic.StoreUint32(&p.stopProcessing, 0)
+	p.stopProcessing.Store(false)
 }
 
 func (p *BinlogParser) Reset() {
@@ -166,7 +168,7 @@ func (p *BinlogParser) parseSingleEvent(r io.Reader, onEvent OnEventFunc) (bool,
 }
 
 func (p *BinlogParser) ParseReader(r io.Reader, onEvent OnEventFunc) error {
-	for atomic.LoadUint32(&p.stopProcessing) != 1 {
+	for !p.stopProcessing.Load() {
 		done, err := p.parseSingleEvent(r, onEvent)
 		if err != nil {
 			if err == errMissingTableMapEvent {
@@ -213,6 +215,10 @@ func (p *BinlogParser) SetVerifyChecksum(verify bool) {
 
 func (p *BinlogParser) SetFlavor(flavor string) {
 	p.flavor = flavor
+}
+
+func (p *BinlogParser) SetPayloadDecoderConcurrency(concurrency int) {
+	p.payloadDecoderConcurrency = concurrency
 }
 
 func (p *BinlogParser) SetRowsEventDecodeFunc(rowsEventDecodeFunc func(*RowsEvent, []byte) error) {
@@ -456,6 +462,7 @@ func (p *BinlogParser) newRowsEvent(h *EventHeader) *RowsEvent {
 func (p *BinlogParser) newTransactionPayloadEvent() *TransactionPayloadEvent {
 	e := &TransactionPayloadEvent{}
 	e.format = *p.format
+	e.concurrency = p.payloadDecoderConcurrency
 
 	return e
 }
